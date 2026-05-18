@@ -1,0 +1,23 @@
+.model-info-float {
+    position: absolute;
+    top: -14px; /* 因为没有边距，稍微再往上挪一点 */
+    right: 10px;
+    z-index: 100000 !important;
+    pointer-events: none;
+    white-space: nowrap;
+    
+    /* 纯文本样式 */
+    background: transparent;
+    color: var(--SmartThemeQuoteColor, rgba(128, 128, 128, 0.8)); /* 使用更暗淡的文字颜色 */
+    padding: 0;
+    font-size: 10px;
+    font-style: italic; /* 斜体显得更加轻盈 */
+    letter-spacing: 0.3px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.1); /* 给文字加一点极弱的投影防背景串色 */
+}
+
+.model-info-float .sep {
+    color: rgba(128, 128, 128, 0.4);
+    margin: 0 4px;
+    font-style: normal; /* 分隔符保持正体 */
+}
