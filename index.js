@@ -15,7 +15,6 @@
 
             console.log('Message Model Info: extension loaded.');
 
-            // 启动提示
             context.eventSource.on('appReady', function () {
                 if (typeof toastr !== 'undefined') {
                     toastr.info('扩展"Message Model Info"已加载！');
@@ -24,7 +23,7 @@
                 }
             });
 
-            // ---------- 读取当前模型和预设 ----------
+            // ========== 工具函数 ==========
             function getCurrentModel() {
                 const el = document.querySelector('#model_custom_select');
                 if (el && el.selectedIndex >= 0) {
@@ -42,7 +41,6 @@
                     const val = el.options[el.selectedIndex].text.trim();
                     if (val) return val;
                 }
-                // 备选通用预设
                 const generic = document.querySelector('#settings_preset');
                 if (generic && generic.selectedIndex >= 0) {
                     const val = generic.options[generic.selectedIndex].text.trim();
@@ -51,280 +49,267 @@
                 return 'Default';
             }
 
-            // ---------- 通用记录函数 ----------
-            function recordMessage(msg) {
-                if (!msg) return;
-                // 只记录 AI 回复（is_user === false）
-                if (msg.is_user !== false) {
-                    console.log('[MMI] skip user message:', msg.mes);
-                    return;
+            // 获取最后一个 AI 消息的楼层编号（从 .mesIDDisplay 中提取数字，0-based）
+            function getLastAIFloor() {
+                const allMessages = document.querySelectorAll('.mes');
+                for (let i = allMessages.length - 1; i >= 0; i--) {
+                    const el = allMessages[i];
+                    if (el.classList.contains('user')) continue;
+                    const floorEl = el.querySelector('.mesIDDisplay');
+                    if (floorEl) {
+                        const text = floorEl.textContent.trim();
+                        const match = text.match(/\d+/);
+                        if (match) {
+                            return parseInt(match[0], 10);
+                        }
+                    }
                 }
-                
-                const model = getCurrentModel();
-                const preset = getCurrentPreset();
-                
-                // 为当前生成的swipe记录信息
+                return -1;
+            }
+
+            // 通过楼层获取消息对象
+            function getMessageByFloor(floor) {
+                const chat = context.chat;
+                if (Array.isArray(chat) && floor >= 0 && floor < chat.length) {
+                    return chat[floor];
+                }
+                return null;
+            }
+
+            // 记录一条消息的指定 swipe
+            function recordSwipe(msg, swipeId) {
+                if (!msg || msg.is_user !== false) return;
                 if (!msg.extra) msg.extra = {};
                 if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
-                
-                // 获取当前swipe_id（如果没有就是0，即第一条）
-                const currentSwipeId = msg.swipe_id || 0;
-                
-                // 记录到对应的swipe位置
-                msg.extra.swipe_info[currentSwipeId] = {
+
+                const key = String(swipeId);
+                if (msg.extra.swipe_info[key]) {
+                    // 已有记录，跳过但输出调试信息
+                    console.log(`[MMI] swipe ${key} already recorded, skipping`);
+                    return;
+                }
+
+                const model = getCurrentModel();
+                const preset = getCurrentPreset();
+                msg.extra.swipe_info[key] = {
                     model_used: model,
                     preset_used: preset,
                     timestamp: Date.now()
                 };
-                
-                console.log('[MMI] recorded for swipe', currentSwipeId, ':', model, preset, 'for message:', msg.mes);
+                const floor = context.chat.indexOf(msg);
+                console.log(`[MMI] recorded swipe ${key} (${floor >= 0 ? '#' + floor : '?'}) => ${model} | ${preset}`);
             }
 
-            // ---------- 验证和修复swipe信息 ----------
-            function validateAndFixSwipeInfo(msg) {
-                if (!msg || !msg.swipes || msg.swipes.length <= 1) return;
-                
-                if (!msg.extra) msg.extra = {};
-                if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
-                
-                const currentSwipeCount = msg.swipes.length;
-                const recordedSwipeCount = Object.keys(msg.extra.swipe_info).length;
-                
-                console.log('[MMI] validating swipe info:', {
-                    messageId: msg.mes_id || 'unknown',
-                    currentSwipes: currentSwipeCount,
-                    recordedSwipes: recordedSwipeCount
-                });
-                
-                // 如果记录的swipe数量少于实际swipe数量，尝试修复
-                if (recordedSwipeCount < currentSwipeCount) {
-                    console.log('[MMI] missing swipe records detected, attempting to fix...');
-                    
-                    const model = getCurrentModel();
-                    const preset = getCurrentPreset();
-                    
-                    // 为缺失的swipe记录信息
-                    for (let i = recordedSwipeCount; i < currentSwipeCount; i++) {
-                        if (!msg.extra.swipe_info[i]) {
-                            msg.extra.swipe_info[i] = {
-                                model_used: model,
-                                preset_used: preset,
-                                timestamp: Date.now(),
-                                auto_fixed: true // 标记为自动修复
-                            };
-                            console.log('[MMI] auto-fixed swipe', i, ':', model, preset);
+            // 补录缺失的 swipe（用于更多回复）
+            function fillMissingSwipes(msg) {
+                if (!msg || !msg.swipes) return;
+                for (let i = 0; i < msg.swipes.length; i++) {
+                    recordSwipe(msg, i);
+                }
+            }
+
+            // ========== 监控器 ==========
+            let activeMonitorId = null;
+            let stopRequested = false;
+
+            function stopMonitor(reason) {
+                if (activeMonitorId) {
+                    clearInterval(activeMonitorId);
+                    activeMonitorId = null;
+                    console.log('[MMI] Monitor ended (' + reason + ')');
+                }
+            }
+
+            // 执行记录并停止监控
+            function finalizeAndRecord(options) {
+                stopRequested = false;
+                const delay = 3000; // 等待流式输出完成
+
+                // 根据类型延迟后记录
+                const doRecord = () => {
+                    if (options.type === 'new_message') {
+                        const currentFloor = getLastAIFloor();
+                        if (currentFloor > options.floor) {
+                            const msg = getMessageByFloor(currentFloor);
+                            if (msg) recordSwipe(msg, 0);
+                        } else if (currentFloor === options.floor) {
+                            console.log('[MMI] No new message generated (empty or canceled)');
+                        }
+                    } else if (options.type === 'more_replies') {
+                        const msg = getMessageByFloor(options.floor);
+                        if (msg) fillMissingSwipes(msg);
+                    } else if (options.type === 'regenerate') {
+                        const msg = getMessageByFloor(options.floor);
+                        if (msg && msg !== options.oldMsg && msg.is_user === false) {
+                            recordSwipe(msg, 0);
                         }
                     }
-                }
+                    stopMonitor('done');
+                };
+
+                // 如果已经触发了，但有流式还在进行，我们延迟执行以获取完整内容
+                setTimeout(doRecord, delay);
             }
 
-            // ---------- 方法1：尝试已知事件（用于诊断） ----------
-            const events = ['messageSent', 'messageGenerated', 'characterMessageGenerated', 'newMessage'];
-            events.forEach(evt => {
-                context.eventSource.on(evt, function (data) {
-                    console.log('[MMI] Event "' + evt + '" fired with:', data);
-                });
-            });
+            function startMonitor(options) {
+                stopMonitor('restart');
+                stopRequested = false;
+                console.log('[MMI] Monitor started for ' + options.type);
 
-            // ---------- 方法2：MutationObserver 监听新消息 DOM 节点 ----------
-            const chatContainer = document.getElementById('chat');
-            if (!chatContainer) {
-                console.error('[MMI] #chat container not found');
-                return;
-            }
+                const startTime = Date.now();
+                const timeout = 120000;
 
-            // 存储最后处理的message ID，避免重复处理
-            let lastProcessedMessageId = null;
-
-            const observer = new MutationObserver(function (mutations) {
-                for (const mutation of mutations) {
-                    if (mutation.type === 'childList') {
-                        mutation.addedNodes.forEach(node => {
-                            // 检查新增节点是否是 .mes 元素
-                            if (node.nodeType === 1 && node.matches && node.matches('.mes')) {
-                                console.log('[MMI] new .mes element detected');
-                                
-                                // 延迟以确保 context.chat 已更新
-                                setTimeout(() => {
-                                    const chat = context.chat;
-                                    if (!chat || chat.length === 0) return;
-                                    
-                                    // 找到最新的AI消息
-                                    let latestAIMessage = null;
-                                    for (let i = chat.length - 1; i >= 0; i--) {
-                                        if (chat[i].is_user === false) {
-                                            latestAIMessage = chat[i];
-                                            break;
-                                        }
-                                    }
-                                    
-                                    if (latestAIMessage) {
-                                        // 检查是否已经处理过这条消息
-                                        const messageId = latestAIMessage.mes_id || latestAIMessage.send_date;
-                                        if (messageId && messageId !== lastProcessedMessageId) {
-                                            lastProcessedMessageId = messageId;
-                                            recordMessage(latestAIMessage);
-                                        }
-                                    }
-                                }, 300);
-                            }
-                        });
+                activeMonitorId = setInterval(() => {
+                    if (stopRequested) {
+                        // 用户点击停止，立即检查并记录（如果新内容已出现）
+                        finalizeAndRecord(options);
+                        return;
                     }
-                }
-            });
 
-            observer.observe(chatContainer, {
-                childList: true,
-                subtree: true,
-            });
-            console.log('[MMI] MutationObserver started');
-
-            // ---------- 监听消息生成事件（更可靠的方式） ----------
-            context.eventSource.on('messageGenerated', function (data) {
-                console.log('[MMI] messageGenerated event:', data);
-                if (data && data.message) {
-                    // 延迟确保消息已经完全处理
-                    setTimeout(() => {
-                        recordMessage(data.message);
-                    }, 500);
-                }
-            });
-
-            // ---------- 监听swipe相关事件 ----------
-            context.eventSource.on('swipeChanged', function (data) {
-                console.log('[MMI] swipe changed:', data);
-                // 当用户切换swipe时，确保新显示的swipe也有模型信息记录
-                if (data && data.message) {
-                    const msg = data.message;
-                    const currentSwipeId = msg.swipe_id || 0;
-                    
-                    // 验证并修复swipe信息
-                    validateAndFixSwipeInfo(msg);
-                    
-                    // 如果这个swipe还没有记录模型信息，就记录当前设置
-                    if (!msg.extra || !msg.extra.swipe_info || !msg.extra.swipe_info[currentSwipeId]) {
-                        const model = getCurrentModel();
-                        const preset = getCurrentPreset();
-                        
-                        if (!msg.extra) msg.extra = {};
-                        if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
-                        
-                        msg.extra.swipe_info[currentSwipeId] = {
-                            model_used: model,
-                            preset_used: preset,
-                            timestamp: Date.now()
-                        };
-                        
-                        console.log('[MMI] auto-recorded for new swipe', currentSwipeId, ':', model, preset);
-                    }
-                }
-            });
-
-            context.eventSource.on('swipeGenerated', function (data) {
-                console.log('[MMI] new swipe generated:', data);
-                // 新swipe生成时，立即记录模型信息
-                if (data && data.message) {
-                    const msg = data.message;
-                    
-                    // 延迟一下，确保swipe已经添加到数组中
-                    setTimeout(() => {
-                        const currentSwipeCount = msg.swipes ? msg.swipes.length : 1;
-                        const newSwipeId = currentSwipeCount - 1; // 新生成的swipe是最后一个
-                        
-                        const model = getCurrentModel();
-                        const preset = getCurrentPreset();
-                        
-                        if (!msg.extra) msg.extra = {};
-                        if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
-                        
-                        msg.extra.swipe_info[newSwipeId] = {
-                            model_used: model,
-                            preset_used: preset,
-                            timestamp: Date.now()
-                        };
-                        
-                        console.log('[MMI] recorded for newly generated swipe', newSwipeId, ':', model, preset);
-                        
-                        // 验证修复
-                        validateAndFixSwipeInfo(msg);
-                    }, 300);
-                }
-            });
-
-            // 监听"获取更多回复"按钮点击
-            $(document).on('click', '.regenerate_swipe_button, .regenerate-button, [title*="regenerate"], [title*="重新生成"], [title*="更多回复"]', function () {
-                console.log('[MMI] regenerate/swipe button clicked');
-                // 延迟一下，等待新swipe生成
-                setTimeout(() => {
-                    const chat = context.chat;
-                    if (!chat || chat.length === 0) return;
-                    
-                    // 找到最后一条AI消息
-                    let lastAIMessage = null;
-                    for (let i = chat.length - 1; i >= 0; i--) {
-                        if (chat[i].is_user === false) {
-                            lastAIMessage = chat[i];
-                            break;
+                    let done = false;
+                    if (options.type === 'new_message') {
+                        const currentFloor = getLastAIFloor();
+                        if (currentFloor > options.floor) {
+                            done = true;
+                        }
+                    } else if (options.type === 'more_replies') {
+                        const msg = getMessageByFloor(options.floor);
+                        if (msg && Array.isArray(msg.swipes) && msg.swipes.length > options.oldSwipeCount) {
+                            done = true;
+                        }
+                    } else if (options.type === 'regenerate') {
+                        const msg = getMessageByFloor(options.floor);
+                        // 新消息对象出现（且是AI消息）
+                        if (msg && msg !== options.oldMsg && msg.is_user === false) {
+                            done = true;
                         }
                     }
-                    
-                    if (lastAIMessage) {
-                        // 验证并修复所有swipe信息
-                        validateAndFixSwipeInfo(lastAIMessage);
+
+                    if (done) {
+                        finalizeAndRecord(options);
+                        return;
                     }
-                }, 1500); // 延迟1.5秒确保swipe已完全生成
+
+                    if (Date.now() - startTime > timeout) {
+                        console.warn('[MMI] Monitor timed out');
+                        stopMonitor('timeout');
+                    }
+                }, 800);
+            }
+
+            // ========== 用户动作监听 ==========
+            // 发送按钮
+            $(document).on('click', '.fa-paper-plane', function (e) {
+                if (!$(e.target).is(':visible')) return;
+                console.log('[MMI] Send button clicked');
+                const lastFloor = getLastAIFloor();
+                if (lastFloor === -1) {
+                    console.warn('[MMI] Cannot determine last AI floor, abort');
+                    return;
+                }
+                startMonitor({ type: 'new_message', floor: lastFloor });
             });
 
-            // ---------- 悬浮窗显示（基于编辑按钮点击） ----------
+            // 更多回复按钮（右箭头）
+            $(document).on('click', '.mes .swipe_right', function (e) {
+                if (!$(e.target).is(':visible')) return;
+                console.log('[MMI] More replies button clicked');
+                const lastFloor = getLastAIFloor();
+                if (lastFloor === -1) return;
+                const msg = getMessageByFloor(lastFloor);
+                if (!msg) return;
+                const currentSwipeCount = Array.isArray(msg.swipes) ? msg.swipes.length : 0;
+                startMonitor({ type: 'more_replies', floor: lastFloor, oldSwipeCount: currentSwipeCount });
+            });
+
+            // 重新回复按钮
+            $(document).on('click', '#option_regenerate', function (e) {
+                if (!$(e.target).is(':visible')) return;
+                console.log('[MMI] Regenerate button clicked');
+                const lastFloor = getLastAIFloor();
+                if (lastFloor === -1) {
+                    console.warn('[MMI] No AI message to regenerate');
+                    return;
+                }
+                const oldMsg = getMessageByFloor(lastFloor);
+                if (!oldMsg || oldMsg.is_user !== false) {
+                    console.warn('[MMI] Last AI message invalid');
+                    return;
+                }
+                startMonitor({ type: 'regenerate', floor: lastFloor, oldMsg: oldMsg });
+            });
+
+            // 停止按钮（提前终止生成）
+            $(document).on('click', '.fa-circle-stop', function (e) {
+                if (!$(e.target).is(':visible')) return;
+                console.log('[MMI] Stop button clicked');
+                stopRequested = true;
+                // 如果没有活跃监控，则忽略（不会影响其他操作）
+            });
+
+            // ========== 悬浮窗显示（编辑按钮点开时） ==========
             const editBtnSelector = '.mes_edit, .message_edit, [title="编辑"], [title="Edit"]';
             $(document).on('click', editBtnSelector, function (e) {
                 const $btn = $(this);
                 const $mes = $btn.closest('.mes');
                 if (!$mes.length || $mes.find('.model-info-float').length > 0) return;
 
-                let mid = parseInt($mes.data('mid'));
-                if (isNaN(mid)) {
-                    const all = $('#chat .mes');
-                    const idx = all.index($mes);
-                    if (idx >= 0 && idx < context.chat.length) mid = idx;
-                    else {
-                        console.warn('[MMI] cannot get mid');
-                        return;
+                const floorEl = $mes.find('.mesIDDisplay');
+                let floor = -1;
+                if (floorEl.length) {
+                    const text = floorEl.text().trim();
+                    const match = text.match(/\d+/);
+                    if (match) {
+                        floor = parseInt(match[0], 10);
                     }
                 }
 
-                const msg = context.chat[mid];
-                if (!msg) {
-                    console.warn('[MMI] no message for mid', mid);
+                if (floor === -1 || floor >= context.chat.length) {
+                    console.warn('[MMI] Invalid floor', floor);
                     return;
                 }
 
-                // 首先验证并修复swipe信息
-                validateAndFixSwipeInfo(msg);
+                const msg = context.chat[floor];
+                if (!msg) return;
 
-                // 获取当前显示的swipe_id（默认为0）
-                const currentSwipeId = msg.swipe_id || 0;
-                
-                // 从swipe_info中读取对应swipe的模型信息
+                const currentSwipeId = String(msg.swipe_id || 0);
                 let model = 'N/A';
                 let preset = 'N/A';
-                
+
                 if (msg.extra && msg.extra.swipe_info && msg.extra.swipe_info[currentSwipeId]) {
                     model = msg.extra.swipe_info[currentSwipeId].model_used || 'N/A';
                     preset = msg.extra.swipe_info[currentSwipeId].preset_used || 'N/A';
-                } else {
-                    // 兼容旧数据：如果没有swipe_info，回退到旧的extra字段
-                    model = (msg.extra && msg.extra.model_used) || 'N/A';
-                    preset = (msg.extra && msg.extra.preset_used) || 'N/A';
                 }
-                
-                console.log('[MMI] show float for mid=' + mid, 'swipe=' + currentSwipeId, model, preset);
 
-                const $float = $(`<div class="model-info-float">${model} <span class="sep">~</span> ${preset}</div>`);
+                console.log(`[MMI] show float for #${floor} swipe=${currentSwipeId} | ${model} | ${preset}`);
+
+                const $float = $(`<div class="model-info-float">
+                    <span class="mmi-model">${model}</span>
+                    <span class="sep">~</span>
+                    <span class="mmi-preset">${preset}</span>
+                    ${model === 'N/A' ? '<button class="mmi-record-now" style="margin-left:6px;font-size:0.8em;">记录当前</button>' : ''}
+                </div>`);
+
+                $float.find('.mmi-record-now').on('click', function (ev) {
+                    ev.stopPropagation();
+                    const nowModel = getCurrentModel();
+                    const nowPreset = getCurrentPreset();
+                    if (!msg.extra) msg.extra = {};
+                    if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
+                    msg.extra.swipe_info[currentSwipeId] = {
+                        model_used: nowModel,
+                        preset_used: nowPreset,
+                        timestamp: Date.now()
+                    };
+                    $float.find('.mmi-model').text(nowModel);
+                    $float.find('.mmi-preset').text(nowPreset);
+                    $(this).remove();
+                    console.log(`[MMI] manually recorded swipe ${currentSwipeId} => ${nowModel} | ${nowPreset}`);
+                });
+
                 $mes.css('position', 'relative');
-               $mes.prepend($float);
+                $mes.prepend($float);
 
-                // 编辑结束时移除
                 const interval = setInterval(() => {
                     if ($mes.find('.edit_textarea, textarea.mes_edit_area').length === 0) {
                         clearInterval(interval);
@@ -333,32 +318,8 @@
                 }, 500);
             });
 
-            // 定期验证所有消息的swipe信息
-            setInterval(() => {
-                const chat = context.chat;
-                if (!chat) return;
-                
-                chat.forEach((msg, index) => {
-                    if (msg && msg.is_user === false) {
-                        validateAndFixSwipeInfo(msg);
-                    }
-                });
-            }, 10000); // 每10秒验证一次
+            console.log('Message Model Info: floor-based recording (supporting regenerate) active');
 
-            // 初始化时验证所有现有消息
-            setTimeout(() => {
-                const chat = context.chat;
-                if (!chat) return;
-                
-                console.log('[MMI] initial validation of all messages');
-                chat.forEach((msg, index) => {
-                    if (msg && msg.is_user === false) {
-                        validateAndFixSwipeInfo(msg);
-                    }
-                });
-            }, 2000);
-
-            console.log('Message Model Info: setup complete');
         } catch (e) {
             console.error('Message Model Info init error:', e);
         }
