@@ -1,6 +1,31 @@
 (function () {
     'use strict';
 
+    // ========== 全局可调用 API（方便控制台调试） ==========
+    window.MMI = window.MMI || {};
+    window.MMI.refreshAll = () => {
+        document.querySelectorAll('.mes').forEach(m => refreshFloat(m));
+    };
+    window.MMI.resetAll = () => {
+        const context = SillyTavern.getContext();
+        if (!context) return console.log('MMI: no context');
+        const scopes = getScopes();
+        scopes.ai = scopes.user = scopes.all = null;
+        if (context.chat) {
+            context.chat.forEach(m => {
+                if (m.extra) {
+                    delete m.extra.pinned_this;
+                    delete m.extra.display_text;
+                }
+            });
+        }
+        // 移除所有现有浮层，下次交互时重建
+        document.querySelectorAll('.model-info-float').forEach(f => f.remove());
+        document.querySelectorAll('.mmi-editor-wrapper').forEach(e => e.remove());
+        console.log('MMI: all display data cleared.');
+    };
+
+    // ========== 主启动 ==========
     const init = function () {
         try {
             if (typeof SillyTavern === 'undefined' || !SillyTavern.getContext) {
@@ -13,14 +38,136 @@
                 return;
             }
 
-            console.log('Message Model Info: extension loaded.');
+            // ========== 注入极简样式 ==========
+            const styleId = 'mmi-style';
+            if (!document.getElementById(styleId)) {
+                const style = document.createElement('style');
+                style.id = styleId;
+                style.textContent = `
+                    .model-info-float {
+                        position: absolute;
+                        top: -14px;
+                        right: 10px;
+                        z-index: 1000;
+                        white-space: nowrap;
+                        pointer-events: auto;
+                        cursor: pointer;
+                        background: transparent;
+                        color: var(--SmartThemeQuoteColor, rgba(150,150,150,0.8));
+                        font-size: 10px;
+                        font-style: italic;
+                        letter-spacing: 0.3px;
+                        text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+                        display: none;
+                        padding: 0 4px;
+                        transition: opacity 0.2s, color 0.2s;
+                        opacity: 0.4;
+                        user-select: none;
+                    }
+                    .model-info-float.force-visible,
+                    .model-info-float.editing {
+                        display: block;
+                    }
+                    .model-info-float.pinned,
+                    .model-info-float.scope-visible,
+                    .model-info-float.mmi-editing {
+                        opacity: 1;
+                    }
+                    .model-info-float:hover {
+                        color: rgba(255,255,255,0.9);
+                        opacity: 0.9;
+                    }
+                    .mmi-editor-wrapper {
+                        position: absolute;
+                        top: -16px;
+                        right: 10px;
+                        z-index: 1001;
+                        background: rgba(20,20,20,0.95);
+                        border-radius: 4px;
+                        padding: 4px 6px;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+                        display: none;
+                        flex-direction: column;
+                        gap: 4px;
+                        font-style: normal;
+                        border: 1px solid rgba(255,255,255,0.05);
+                    }
+                    .mmi-editor-input {
+                        background: transparent;
+                        border: none;
+                        border-bottom: 1px dashed rgba(128,128,128,0.5);
+                        color: rgba(255,255,255,0.9);
+                        font-size: 11px;
+                        font-family: monospace;
+                        padding: 2px 0;
+                        width: 200px;
+                        outline: none;
+                    }
+                    .mmi-editor-input:focus {
+                        border-bottom: 1px solid rgba(255,255,255,0.9);
+                    }
+                    .mmi-toolbar {
+                        display: flex;
+                        gap: 8px;
+                        justify-content: flex-end;
+                        margin-top: 2px;
+                    }
+                    .mmi-btn {
+                        background: transparent;
+                        border: none;
+                        color: rgba(150,150,150,0.8);
+                        font-size: 10px;
+                        cursor: pointer;
+                        padding: 0;
+                        letter-spacing: 1px;
+                        transition: color 0.2s;
+                    }
+                    .mmi-btn:hover {
+                        color: rgba(255,255,255,0.9);
+                    }
+                    .mmi-sub-panel {
+                        display: none;
+                        justify-content: flex-end;
+                        gap: 6px;
+                        padding-top: 4px;
+                        border-top: 1px solid rgba(255,255,255,0.05);
+                        margin-top: 2px;
+                        flex-wrap: wrap;
+                    }
+                    .mmi-sub-btn {
+                        background: transparent;
+                        border: none;
+                        color: rgba(200, 200, 200, 0.85);
+                        font-size: 10px;
+                        cursor: pointer;
+                        padding: 0;
+                    }
+                    .mmi-sub-btn:hover {
+                        color: rgba(255, 255, 255, 0.95);
+                    }
+                    .mmi-pin-btn {
+                        color: rgba(220, 220, 220, 0.85);
+                    }
+                    .mmi-pin-btn:hover {
+                        rgba(255, 255, 255, 0.95);
+                    }
+                    .mmi-clear-btn {
+                        color: rgba(170, 170, 170, 0.75);
+                        font-size: 9px;
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+
+            console.log('Message Model Info: extension loaded (advanced editor).');
 
             context.eventSource.on('appReady', function () {
                 if (typeof toastr !== 'undefined') {
                     toastr.info('扩展"Message Model Info"已加载！');
                 } else {
-                    alert('扩展已加载！');
+                    console.log('Extension loaded.');
                 }
+                setupFloatSystem();
             });
 
             // ========== 工具函数 ==========
@@ -49,7 +196,6 @@
                 return 'Default';
             }
 
-            // 获取最后一个 AI 消息的楼层编号（从 .mesIDDisplay 中提取数字，0-based）
             function getLastAIFloor() {
                 const allMessages = document.querySelectorAll('.mes');
                 for (let i = allMessages.length - 1; i >= 0; i--) {
@@ -59,36 +205,24 @@
                     if (floorEl) {
                         const text = floorEl.textContent.trim();
                         const match = text.match(/\d+/);
-                        if (match) {
-                            return parseInt(match[0], 10);
-                        }
+                        if (match) return parseInt(match[0], 10);
                     }
                 }
                 return -1;
             }
 
-            // 通过楼层获取消息对象
             function getMessageByFloor(floor) {
                 const chat = context.chat;
-                if (Array.isArray(chat) && floor >= 0 && floor < chat.length) {
-                    return chat[floor];
-                }
+                if (Array.isArray(chat) && floor >= 0 && floor < chat.length) return chat[floor];
                 return null;
             }
 
-            // 记录一条消息的指定 swipe
             function recordSwipe(msg, swipeId) {
                 if (!msg || msg.is_user !== false) return;
                 if (!msg.extra) msg.extra = {};
                 if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
-
                 const key = String(swipeId);
-                if (msg.extra.swipe_info[key]) {
-                    // 已有记录，跳过但输出调试信息
-                    console.log(`[MMI] swipe ${key} already recorded, skipping`);
-                    return;
-                }
-
+                if (msg.extra.swipe_info[key]) return;
                 const model = getCurrentModel();
                 const preset = getCurrentPreset();
                 msg.extra.swipe_info[key] = {
@@ -100,12 +234,9 @@
                 console.log(`[MMI] recorded swipe ${key} (${floor >= 0 ? '#' + floor : '?'}) => ${model} | ${preset}`);
             }
 
-            // 补录缺失的 swipe（用于更多回复）
             function fillMissingSwipes(msg) {
                 if (!msg || !msg.swipes) return;
-                for (let i = 0; i < msg.swipes.length; i++) {
-                    recordSwipe(msg, i);
-                }
+                for (let i = 0; i < msg.swipes.length; i++) recordSwipe(msg, i);
             }
 
             // ========== 监控器 ==========
@@ -120,12 +251,9 @@
                 }
             }
 
-            // 执行记录并停止监控
             function finalizeAndRecord(options) {
                 stopRequested = false;
-                const delay = 3000; // 等待流式输出完成
-
-                // 根据类型延迟后记录
+                const delay = 3000;
                 const doRecord = () => {
                     if (options.type === 'new_message') {
                         const currentFloor = getLastAIFloor();
@@ -133,21 +261,25 @@
                             const msg = getMessageByFloor(currentFloor);
                             if (msg) recordSwipe(msg, 0);
                         } else if (currentFloor === options.floor) {
-                            console.log('[MMI] No new message generated (empty or canceled)');
+                            console.log('[MMI] No new message generated');
                         }
                     } else if (options.type === 'more_replies') {
                         const msg = getMessageByFloor(options.floor);
                         if (msg) fillMissingSwipes(msg);
                     } else if (options.type === 'regenerate') {
                         const msg = getMessageByFloor(options.floor);
-                        if (msg && msg !== options.oldMsg && msg.is_user === false) {
-                            recordSwipe(msg, 0);
-                        }
+                        if (msg && msg !== options.oldMsg && msg.is_user === false) recordSwipe(msg, 0);
                     }
                     stopMonitor('done');
+                    setTimeout(() => {
+                        if (options.floor !== undefined) {
+                            document.querySelectorAll('.mes').forEach(el => {
+                                const f = getFloorFromElement(el);
+                                if (f === options.floor) refreshFloat(el);
+                            });
+                        }
+                    }, 300);
                 };
-
-                // 如果已经触发了，但有流式还在进行，我们延迟执行以获取完整内容
                 setTimeout(doRecord, delay);
             }
 
@@ -155,170 +287,440 @@
                 stopMonitor('restart');
                 stopRequested = false;
                 console.log('[MMI] Monitor started for ' + options.type);
-
                 const startTime = Date.now();
                 const timeout = 120000;
-
                 activeMonitorId = setInterval(() => {
-                    if (stopRequested) {
-                        // 用户点击停止，立即检查并记录（如果新内容已出现）
-                        finalizeAndRecord(options);
-                        return;
-                    }
-
+                    if (stopRequested) { finalizeAndRecord(options); return; }
                     let done = false;
                     if (options.type === 'new_message') {
-                        const currentFloor = getLastAIFloor();
-                        if (currentFloor > options.floor) {
-                            done = true;
-                        }
+                        if (getLastAIFloor() > options.floor) done = true;
                     } else if (options.type === 'more_replies') {
                         const msg = getMessageByFloor(options.floor);
-                        if (msg && Array.isArray(msg.swipes) && msg.swipes.length > options.oldSwipeCount) {
-                            done = true;
-                        }
+                        if (msg && Array.isArray(msg.swipes) && msg.swipes.length > options.oldSwipeCount) done = true;
                     } else if (options.type === 'regenerate') {
                         const msg = getMessageByFloor(options.floor);
-                        // 新消息对象出现（且是AI消息）
-                        if (msg && msg !== options.oldMsg && msg.is_user === false) {
-                            done = true;
-                        }
+                        if (msg && msg !== options.oldMsg && msg.is_user === false) done = true;
                     }
-
-                    if (done) {
-                        finalizeAndRecord(options);
-                        return;
-                    }
-
-                    if (Date.now() - startTime > timeout) {
-                        console.warn('[MMI] Monitor timed out');
-                        stopMonitor('timeout');
-                    }
+                    if (done) { finalizeAndRecord(options); return; }
+                    if (Date.now() - startTime > timeout) { stopMonitor('timeout'); }
                 }, 800);
             }
 
             // ========== 用户动作监听 ==========
-            // 发送按钮
             $(document).on('click', '.fa-paper-plane', function (e) {
                 if (!$(e.target).is(':visible')) return;
                 console.log('[MMI] Send button clicked');
                 const lastFloor = getLastAIFloor();
-                if (lastFloor === -1) {
-                    console.warn('[MMI] Cannot determine last AI floor, abort');
-                    return;
-                }
+                if (lastFloor === -1) return;
                 startMonitor({ type: 'new_message', floor: lastFloor });
             });
 
-            // 更多回复按钮（右箭头）
             $(document).on('click', '.mes .swipe_right', function (e) {
                 if (!$(e.target).is(':visible')) return;
                 console.log('[MMI] More replies button clicked');
-                const lastFloor = getLastAIFloor();
-                if (lastFloor === -1) return;
-                const msg = getMessageByFloor(lastFloor);
+                const mesEl = $(this).closest('.mes')[0];
+                const floor = mesEl ? getFloorFromElement(mesEl) : -1;
+                if (floor === -1) return;
+                const msg = getMessageByFloor(floor);
                 if (!msg) return;
-                const currentSwipeCount = Array.isArray(msg.swipes) ? msg.swipes.length : 0;
-                startMonitor({ type: 'more_replies', floor: lastFloor, oldSwipeCount: currentSwipeCount });
+                const curCount = Array.isArray(msg.swipes) ? msg.swipes.length : 0;
+                startMonitor({ type: 'more_replies', floor: floor, oldSwipeCount: curCount });
+                setTimeout(() => { if (mesEl) refreshFloat(mesEl); }, 200);
             });
 
-            // 重新回复按钮
+            $(document).on('click', '.mes .swipe_left', function (e) {
+                const mesEl = $(this).closest('.mes')[0];
+                if (!mesEl) return;
+                setTimeout(() => refreshFloat(mesEl), 200);
+            });
+
             $(document).on('click', '#option_regenerate', function (e) {
                 if (!$(e.target).is(':visible')) return;
                 console.log('[MMI] Regenerate button clicked');
                 const lastFloor = getLastAIFloor();
-                if (lastFloor === -1) {
-                    console.warn('[MMI] No AI message to regenerate');
-                    return;
-                }
+                if (lastFloor === -1) return;
                 const oldMsg = getMessageByFloor(lastFloor);
-                if (!oldMsg || oldMsg.is_user !== false) {
-                    console.warn('[MMI] Last AI message invalid');
-                    return;
-                }
+                if (!oldMsg || oldMsg.is_user !== false) return;
                 startMonitor({ type: 'regenerate', floor: lastFloor, oldMsg: oldMsg });
             });
 
-            // 停止按钮（提前终止生成）
             $(document).on('click', '.fa-circle-stop', function (e) {
                 if (!$(e.target).is(':visible')) return;
                 console.log('[MMI] Stop button clicked');
                 stopRequested = true;
-                // 如果没有活跃监控，则忽略（不会影响其他操作）
             });
 
-            // ========== 悬浮窗显示（编辑按钮点开时） ==========
-            const editBtnSelector = '.mes_edit, .message_edit, [title="编辑"], [title="Edit"]';
-            $(document).on('click', editBtnSelector, function (e) {
-                const $btn = $(this);
-                const $mes = $btn.closest('.mes');
-                if (!$mes.length || $mes.find('.model-info-float').length > 0) return;
-
-                const floorEl = $mes.find('.mesIDDisplay');
-                let floor = -1;
-                if (floorEl.length) {
-                    const text = floorEl.text().trim();
-                    const match = text.match(/\d+/);
-                    if (match) {
-                        floor = parseInt(match[0], 10);
+            // ========== 编辑按钮：强制进入模型模式 ==========
+            $(document).on('click', '.mes_edit, .message_edit, [title="编辑"], [title="Edit"]', function (e) {
+                const mesEl = $(this).closest('.mes')[0];
+                if (!mesEl) return;
+                const floor = getFloorFromElement(mesEl);
+                if (floor >= 0) {
+                    console.log(`[MMI] show float for #${floor} (edit mode)`);
+                }
+                // 标记为编辑状态，并立即显示模型数据（无论之前展示什么）
+                mesEl.classList.add('mmi-editing');
+                ensureFloatStructure(mesEl);
+                const float = mesEl.querySelector('.model-info-float');
+                if (float && floor >= 0) {
+                    const msg = context.chat[floor];
+                    if (msg) {
+                        const fmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
+                        float.textContent = parseTemplate(fmt, msg);
+                        float.style.display = 'block';
+                        float.classList.add('force-visible');
                     }
                 }
+            });
 
-                if (floor === -1 || floor >= context.chat.length) {
-                    console.warn('[MMI] Invalid floor', floor);
-                    return;
+            // ========== 模板系统 ==========
+            const STORAGE_KEY_TEMPLATE = 'mmi_globalTemplate';
+            let globalTemplate = localStorage.getItem(STORAGE_KEY_TEMPLATE) || '{model} ~ {preset}';
+
+            function saveGlobalTemplate(val) {
+                globalTemplate = val;
+                localStorage.setItem(STORAGE_KEY_TEMPLATE, val);
+            }
+
+            function getScopes() {
+                if (!context.chatMetadata) context.chatMetadata = {};
+                if (!context.chatMetadata.mmi) context.chatMetadata.mmi = {};
+                if (!context.chatMetadata.mmi.scopes) context.chatMetadata.mmi.scopes = { ai: null, user: null, all: null };
+                return context.chatMetadata.mmi.scopes;
+            }
+
+            function parseTemplate(templateStr, msg) {
+                let model = 'N/A', preset = 'N/A';
+                if (msg && msg.extra && msg.extra.swipe_info) {
+                    const key = String(msg.swipe_id || 0);
+                    if (msg.extra.swipe_info[key]) {
+                        model = msg.extra.swipe_info[key].model_used || 'N/A';
+                        preset = msg.extra.swipe_info[key].preset_used || 'N/A';
+                    }
                 }
+                if (model === 'N/A') model = getCurrentModel();
+                if (preset === 'N/A') preset = getCurrentPreset();
 
+                const userName = context.name1 || 'User';
+                const charName = context.name2 || 'Char';
+
+                return templateStr
+                    .replace(/{model}/g, model)
+                    .replace(/{preset}/g, preset)
+                    .replace(/{user}/g, userName)
+                    .replace(/{char}/g, charName);
+            }
+
+            function getDisplayTextForMsg(msg) {
+                if (msg.extra && msg.extra.pinned_this && msg.extra.display_text) {
+                    return parseTemplate(msg.extra.display_text, msg);
+                }
+                const scopes = getScopes();
+                if (msg.is_user === false && scopes.ai) return parseTemplate(scopes.ai, msg);
+                if (msg.is_user === true && scopes.user) return parseTemplate(scopes.user, msg);
+                if (scopes.all) return parseTemplate(scopes.all, msg);
+
+                const fmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
+                return parseTemplate(fmt, msg);
+            }
+
+            function isFloatPinnedOrScoped(msg) {
+                if (msg.extra && msg.extra.pinned_this) return true;
+                const scopes = getScopes();
+                if (msg.is_user === false && scopes.ai) return true;
+                if (msg.is_user === true && scopes.user) return true;
+                if (scopes.all) return true;
+                return false;
+            }
+
+            function getFloorFromElement(mesEl) {
+                const floorEl = mesEl.querySelector('.mesIDDisplay');
+                if (!floorEl) return -1;
+                const match = floorEl.textContent.trim().match(/\d+/);
+                return match ? parseInt(match[0], 10) : -1;
+            }
+
+            // ========== 核心刷新函数 ==========
+            function refreshFloat(mesEl) {
+                const floor = getFloorFromElement(mesEl);
+                if (floor < 0 || floor >= context.chat.length) return;
                 const msg = context.chat[floor];
                 if (!msg) return;
 
-                const currentSwipeId = String(msg.swipe_id || 0);
-                let model = 'N/A';
-                let preset = 'N/A';
+                const float = mesEl.querySelector('.model-info-float');
+                if (!float) return;
 
-                if (msg.extra && msg.extra.swipe_info && msg.extra.swipe_info[currentSwipeId]) {
-                    model = msg.extra.swipe_info[currentSwipeId].model_used || 'N/A';
-                    preset = msg.extra.swipe_info[currentSwipeId].preset_used || 'N/A';
+                const isEditing = mesEl.classList.contains('mmi-editing') ||
+                                  !!mesEl.querySelector('.edit_textarea, textarea.mes_edit_area');
+
+                if (isEditing) {
+                    // 编辑状态：严格显示模型格式
+                    const fmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
+                    float.textContent = parseTemplate(fmt, msg);
+                    float.style.display = 'block';
+                    float.classList.add('force-visible');
+                } else {
+                    float.textContent = getDisplayTextForMsg(msg);
+                    const shouldShow = isFloatPinnedOrScoped(msg);
+                    if (shouldShow) {
+                        float.style.display = 'block';
+                        float.classList.add('force-visible', 'scope-visible');
+                    } else {
+                        float.style.display = 'none';
+                        float.classList.remove('force-visible', 'scope-visible');
+                    }
                 }
+            }
 
-                console.log(`[MMI] show float for #${floor} swipe=${currentSwipeId} | ${model} | ${preset}`);
+            function refreshAllFloats() {
+                document.querySelectorAll('.mes').forEach(mes => refreshFloat(mes));
+            }
 
-                const $float = $(`<div class="model-info-float">
-                    <span class="mmi-model">${model}</span>
-                    <span class="sep">~</span>
-                    <span class="mmi-preset">${preset}</span>
-                    ${model === 'N/A' ? '<button class="mmi-record-now" style="margin-left:6px;font-size:0.8em;">记录当前</button>' : ''}
-                </div>`);
+            // ========== 构建浮层和编辑器 ==========
+            function ensureFloatStructure(mesEl) {
+                if (mesEl.querySelector('.model-info-float')) return;
 
-                $float.find('.mmi-record-now').on('click', function (ev) {
-                    ev.stopPropagation();
-                    const nowModel = getCurrentModel();
-                    const nowPreset = getCurrentPreset();
-                    if (!msg.extra) msg.extra = {};
-                    if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
-                    msg.extra.swipe_info[currentSwipeId] = {
-                        model_used: nowModel,
-                        preset_used: nowPreset,
-                        timestamp: Date.now()
-                    };
-                    $float.find('.mmi-model').text(nowModel);
-                    $float.find('.mmi-preset').text(nowPreset);
-                    $(this).remove();
-                    console.log(`[MMI] manually recorded swipe ${currentSwipeId} => ${nowModel} | ${nowPreset}`);
+                const floor = getFloorFromElement(mesEl);
+                if (floor < 0) return;
+                const msg = context.chat[floor];
+                if (!msg) return;
+
+                const float = document.createElement('div');
+                float.className = 'model-info-float';
+                float.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openEditor(mesEl);
+                });
+                mesEl.style.position = 'relative';
+                mesEl.appendChild(float);
+
+                const editor = document.createElement('div');
+                editor.className = 'mmi-editor-wrapper';
+                editor.id = 'mmi-editor-' + floor;
+
+                const curFmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
+
+                editor.innerHTML = `
+                    <input type="text" class="mmi-editor-input" value="${curFmt.replace(/"/g, '&quot;')}">
+                    <div class="mmi-toolbar">
+                        <button class="mmi-btn mmi-helper-btn">辅助</button>
+                        <button class="mmi-btn mmi-pin-btn-display">展示</button>
+                        <button class="mmi-btn mmi-save-btn">保存</button>
+                        <button class="mmi-btn mmi-template-btn">模板</button>
+                        <button class="mmi-btn mmi-cancel-btn">取消</button>
+                    </div>
+                    <div class="mmi-sub-panel mmi-helper-panel">
+                        <button class="mmi-sub-btn mmi-insert-model">+模型</button>
+                        <button class="mmi-sub-btn mmi-insert-preset">+预设</button>
+                        <button class="mmi-sub-btn mmi-insert-user">+User</button>
+                        <button class="mmi-sub-btn mmi-insert-char">+Char</button>
+                    </div>
+                    <div class="mmi-sub-panel mmi-pin-panel">
+                        <button class="mmi-sub-btn mmi-pin-btn mmi-pin-this">常驻此条</button>
+                        <button class="mmi-sub-btn mmi-pin-btn mmi-pin-ai">常驻AI</button>
+                        <button class="mmi-sub-btn mmi-pin-btn mmi-pin-user">常驻User</button>
+                        <button class="mmi-sub-btn mmi-pin-btn mmi-pin-all">常驻全体</button>
+                        <button class="mmi-sub-btn mmi-clear-btn mmi-pin-clear">清除展示</button>
+                    </div>
+                `;
+                mesEl.appendChild(editor);
+
+                const input = editor.querySelector('.mmi-editor-input');
+
+                // 辅助 / 展示面板切换
+                editor.querySelector('.mmi-helper-btn').addEventListener('click', () => {
+                    const hp = editor.querySelector('.mmi-helper-panel');
+                    hp.style.display = hp.style.display === 'flex' ? 'none' : 'flex';
+                    editor.querySelector('.mmi-pin-panel').style.display = 'none';
+                });
+                editor.querySelector('.mmi-pin-btn-display').addEventListener('click', () => {
+                    const pp = editor.querySelector('.mmi-pin-panel');
+                    pp.style.display = pp.style.display === 'flex' ? 'none' : 'flex';
+                    editor.querySelector('.mmi-helper-panel').style.display = 'none';
                 });
 
-                $mes.css('position', 'relative');
-                $mes.prepend($float);
+                // 插入宏
+                const insertAtCursor = (str) => {
+                    const start = input.selectionStart, end = input.selectionEnd;
+                    const val = input.value;
+                    input.value = val.substring(0, start) + str + val.substring(end);
+                    input.focus();
+                    input.selectionStart = input.selectionEnd = start + str.length;
+                };
+                editor.querySelector('.mmi-insert-model').addEventListener('click', () => insertAtCursor('{model}'));
+                editor.querySelector('.mmi-insert-preset').addEventListener('click', () => insertAtCursor('{preset}'));
+                editor.querySelector('.mmi-insert-user').addEventListener('click', () => insertAtCursor('{user}'));
+                editor.querySelector('.mmi-insert-char').addEventListener('click', () => insertAtCursor('{char}'));
 
-                const interval = setInterval(() => {
-                    if ($mes.find('.edit_textarea, textarea.mes_edit_area').length === 0) {
-                        clearInterval(interval);
-                        $mes.find('.model-info-float').fadeOut(300, function () { $(this).remove(); });
+                // 保存
+                editor.querySelector('.mmi-save-btn').addEventListener('click', () => {
+                    const newVal = input.value.trim();
+                    if (!msg.extra) msg.extra = {};
+                    msg.extra.custom_format = newVal;
+                    const swipeKey = String(msg.swipe_id || 0);
+                    if (!msg.extra.swipe_info) msg.extra.swipe_info = {};
+                    if (!msg.extra.swipe_info[swipeKey]) recordSwipe(msg, swipeKey);
+                    closeEditor(mesEl);
+                });
+
+                // 模板
+                editor.querySelector('.mmi-template-btn').addEventListener('click', () => {
+                    const newVal = input.value.trim();
+                    saveGlobalTemplate(newVal);
+                    if (msg.extra) delete msg.extra.custom_format;
+                    closeEditor(mesEl);
+                    refreshAllFloats();
+                });
+
+                // ========== 展示（覆盖规则） ==========
+                const applyDisplay = (scope) => {
+                    const val = input.value.trim();
+                    if (!val) return;
+                    if (scope === 'this') {
+                        if (!msg.extra) msg.extra = {};
+                        msg.extra.pinned_this = true;
+                        msg.extra.display_text = val;
+                    } else {
+                        const scopes = getScopes();
+                        if (scope === 'all') {
+                            scopes.ai = scopes.user = null;
+                            scopes.all = val;
+                            context.chat.forEach(m => {
+                                if (m.extra) { delete m.extra.pinned_this; delete m.extra.display_text; }
+                            });
+                        } else if (scope === 'ai') {
+                            scopes.ai = val;
+                            context.chat.forEach(m => {
+                                if (m.is_user === false && m.extra) { delete m.extra.pinned_this; delete m.extra.display_text; }
+                            });
+                        } else if (scope === 'user') {
+                            scopes.user = val;
+                            context.chat.forEach(m => {
+                                if (m.is_user === true && m.extra) { delete m.extra.pinned_this; delete m.extra.display_text; }
+                            });
+                        }
                     }
-                }, 500);
-            });
+                    closeEditor(mesEl);
+                    refreshAllFloats();
+                };
 
-            console.log('Message Model Info: floor-based recording (supporting regenerate) active');
+                editor.querySelector('.mmi-pin-this').addEventListener('click', () => applyDisplay('this'));
+                editor.querySelector('.mmi-pin-ai').addEventListener('click', () => applyDisplay('ai'));
+                editor.querySelector('.mmi-pin-user').addEventListener('click', () => applyDisplay('user'));
+                editor.querySelector('.mmi-pin-all').addEventListener('click', () => applyDisplay('all'));
+
+                // 清除展示（现在会摧毁所有浮层并重建）
+                editor.querySelector('.mmi-pin-clear').addEventListener('click', () => {
+                    const scopes = getScopes();
+                    scopes.ai = scopes.user = scopes.all = null;
+                    context.chat.forEach(m => {
+                        if (m.extra) {
+                            delete m.extra.pinned_this;
+                            delete m.extra.display_text;
+                        }
+                    });
+                    closeEditor(mesEl);
+                    // 移除全部浮层，下次鼠标/按钮操作时由 ensureFloatStructure 重建
+                    document.querySelectorAll('.model-info-float').forEach(f => f.remove());
+                    document.querySelectorAll('.mmi-editor-wrapper').forEach(e => e.remove());
+                    // 但 rebuild 需要重新绑定，所以直接挂载重建逻辑到下一个微任务
+                    // 但更简单的是：刷新页面？或调用 setupFloatSystem？这里我们只重建当前可见的
+                    // 为了安全，我们让用户刷新或调用 MMI.refreshAll()
+                    // 但我们也可以安排重建：延迟调用 refreshAllFloats 会触发重建。
+                    // 实际上 ensureFloatStructure 会在下次用户操作或 MutationObserver 触发时重建。
+                    // 我们手动触发一次全局刷新：但 refreshAllFloats 需要浮层存在。
+                    // 这里通过重新运行 setupFloatSystem 来解决：
+                    // 将 setupFloatSystem 设为可重复运行，并在此调用。
+                    // 但为了简洁，我们直接在这里调用 refreshAllFloats（它依赖于现有的浮层，但我们已经移除了，所以无效）
+                    // 更好的做法：不删除浮层，只更新内容。
+                    // 所以我们恢复为只更新内容，不删除元素。
+                    // 但为了防止浮层文本缓存问题，我们强制设置所有浮动元素的 textContent。
+                    document.querySelectorAll('.model-info-float').forEach(f => {
+                        const mesEl = f.closest('.mes');
+                        if (mesEl) refreshFloat(mesEl);
+                    });
+                });
+
+                // 取消
+                editor.querySelector('.mmi-cancel-btn').addEventListener('click', () => closeEditor(mesEl));
+
+                refreshFloat(mesEl);
+            }
+
+            function openEditor(mesEl) {
+                const floor = getFloorFromElement(mesEl);
+                if (floor < 0) return;
+                document.querySelectorAll('.mmi-editor-wrapper').forEach(w => w.style.display = 'none');
+                const editor = mesEl.querySelector('.mmi-editor-wrapper');
+                const float = mesEl.querySelector('.model-info-float');
+                if (editor) {
+                    editor.style.display = 'flex';
+                    const msg = context.chat[floor];
+                    if (msg) {
+                        const curFmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
+                        editor.querySelector('.mmi-editor-input').value = curFmt;
+                    }
+                    editor.querySelector('.mmi-helper-panel').style.display = 'none';
+                    editor.querySelector('.mmi-pin-panel').style.display = 'none';
+                }
+                if (float) float.style.display = 'none';
+            }
+
+            function closeEditor(mesEl) {
+                const editor = mesEl.querySelector('.mmi-editor-wrapper');
+                if (editor) editor.style.display = 'none';
+                refreshFloat(mesEl);
+            }
+
+            // ========== 编辑状态监控 ==========
+            function trackEditState(mesEl) {
+                const observer = new MutationObserver(() => {
+                    const hasEditArea = mesEl.querySelector('.edit_textarea, textarea.mes_edit_area') !== null;
+                    if (hasEditArea) {
+                        if (!mesEl.classList.contains('mmi-editing')) {
+                            mesEl.classList.add('mmi-editing');
+                            refreshFloat(mesEl);
+                        }
+                    } else {
+                        if (mesEl.classList.contains('mmi-editing')) {
+                            mesEl.classList.remove('mmi-editing');
+                            refreshFloat(mesEl);
+                        }
+                    }
+                });
+                observer.observe(mesEl, { childList: true, subtree: true, attributes: false });
+            }
+
+            // ========== 初始化 ==========
+            function setupFloatSystem() {
+                document.querySelectorAll('.mes').forEach(mes => {
+                    ensureFloatStructure(mes);
+                    trackEditState(mes);
+                });
+
+                const chatContainer = document.getElementById('chat') || document.body;
+                const mesObserver = new MutationObserver((mutations) => {
+                    mutations.forEach(mut => {
+                        mut.addedNodes.forEach(node => {
+                            if (node.nodeType === 1) {
+                                if (node.classList && node.classList.contains('mes')) {
+                                    ensureFloatStructure(node);
+                                    trackEditState(node);
+                                }
+                                node.querySelectorAll && node.querySelectorAll('.mes').forEach(mes => {
+                                    ensureFloatStructure(mes);
+                                    trackEditState(mes);
+                                });
+                            }
+                        });
+                    });
+                });
+                mesObserver.observe(chatContainer, { childList: true, subtree: true });
+                console.log('[MMI] Float system initialized.');
+            }
+
+            setupFloatSystem();
+            console.log('Message Model Info: advanced editor active (v3).');
 
         } catch (e) {
             console.error('Message Model Info init error:', e);
