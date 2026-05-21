@@ -1,14 +1,25 @@
 (function () {
     'use strict';
 
-    // ========== 全局可调用 API（方便控制台调试） ==========
+    // ========== 日志系统 ==========
+    const mmiLogBuffer = [];
+    const MMI_Log = {
+        log: function (...args) {
+            const msg = args.join(' ');
+            console.log(...args);
+            mmiLogBuffer.push(msg);
+            if (mmiLogBuffer.length > 200) mmiLogBuffer.shift();
+        }
+    };
+
+    // ========== 全局可调用 API ==========
     window.MMI = window.MMI || {};
     window.MMI.refreshAll = () => {
         document.querySelectorAll('.mes').forEach(m => refreshFloat(m));
     };
     window.MMI.resetAll = () => {
         const context = SillyTavern.getContext();
-        if (!context) return console.log('MMI: no context');
+        if (!context) return MMI_Log.log('MMI: no context');
         const scopes = getScopes();
         scopes.ai = scopes.user = scopes.all = null;
         if (context.chat) {
@@ -19,10 +30,9 @@
                 }
             });
         }
-        // 移除所有现有浮层，下次交互时重建
         document.querySelectorAll('.model-info-float').forEach(f => f.remove());
         document.querySelectorAll('.mmi-editor-wrapper').forEach(e => e.remove());
-        console.log('MMI: all display data cleared.');
+        MMI_Log.log('MMI: all display data cleared.');
     };
 
     // ========== 主启动 ==========
@@ -137,40 +147,73 @@
                     .mmi-sub-btn {
                         background: transparent;
                         border: none;
-                        color: rgba(200, 200, 200, 0.85);
+                        color: rgba(200,200,200,0.85);
                         font-size: 10px;
                         cursor: pointer;
                         padding: 0;
                     }
                     .mmi-sub-btn:hover {
-                        color: rgba(255, 255, 255, 0.95);
+                        color: rgba(255,255,255,0.95);
                     }
                     .mmi-pin-btn {
-                        color: rgba(220, 220, 220, 0.85);
+                        color: rgba(220,220,220,0.85);
                     }
                     .mmi-pin-btn:hover {
-                        rgba(255, 255, 255, 0.95);
+                        color: rgba(255,255,255,0.95);
                     }
                     .mmi-clear-btn {
-                        color: rgba(170, 170, 170, 0.75);
+                        color: rgba(170,170,170,0.75);
                         font-size: 9px;
+                    }
+                    .mmi-clear-btn:hover {
+                        color: rgba(255,255,255,0.9);
+                    }
+                    /* 日志面板 */
+                    .mmi-log-panel {
+                        display: none;
+                        background: rgba(20,20,20,0.95);
+                        border: 1px solid rgba(255,255,255,0.05);
+                        border-radius: 4px;
+                        max-height: 150px;
+                        overflow-y: auto;
+                        padding: 4px;
+                        font-family: monospace;
+                        font-size: 10px;
+                        color: rgba(200,200,200,0.9);
+                        margin-top: 4px;
+                        line-height: 1.4;
+                    }
+                    .mmi-log-line {
+                        white-space: pre-wrap;
+                        word-break: break-all;
+                        padding: 2px 0;
+                        border-bottom: 1px solid rgba(255,255,255,0.03);
+                    }
+                    .mmi-log-line:last-child {
+                        border-bottom: none;
                     }
                 `;
                 document.head.appendChild(style);
             }
 
-            console.log('Message Model Info: extension loaded (advanced editor).');
+            MMI_Log.log('Message Model Info: extension loaded (advanced editor).');
 
             context.eventSource.on('appReady', function () {
                 if (typeof toastr !== 'undefined') {
                     toastr.info('扩展"Message Model Info"已加载！');
                 } else {
-                    console.log('Extension loaded.');
+                    MMI_Log.log('Extension loaded.');
                 }
                 setupFloatSystem();
             });
 
             // ========== 工具函数 ==========
+            function escapeHTML(str) {
+                const div = document.createElement('div');
+                div.appendChild(document.createTextNode(str));
+                return div.innerHTML;
+            }
+
             function getCurrentModel() {
                 const el = document.querySelector('#model_custom_select');
                 if (el && el.selectedIndex >= 0) {
@@ -231,7 +274,7 @@
                     timestamp: Date.now()
                 };
                 const floor = context.chat.indexOf(msg);
-                console.log(`[MMI] recorded swipe ${key} (${floor >= 0 ? '#' + floor : '?'}) => ${model} | ${preset}`);
+                MMI_Log.log(`[MMI] recorded swipe ${key} (${floor >= 0 ? '#' + floor : '?'}) => ${model} | ${preset}`);
             }
 
             function fillMissingSwipes(msg) {
@@ -247,7 +290,7 @@
                 if (activeMonitorId) {
                     clearInterval(activeMonitorId);
                     activeMonitorId = null;
-                    console.log('[MMI] Monitor ended (' + reason + ')');
+                    MMI_Log.log('[MMI] Monitor ended (' + reason + ')');
                 }
             }
 
@@ -261,7 +304,7 @@
                             const msg = getMessageByFloor(currentFloor);
                             if (msg) recordSwipe(msg, 0);
                         } else if (currentFloor === options.floor) {
-                            console.log('[MMI] No new message generated');
+                            MMI_Log.log('[MMI] No new message generated');
                         }
                     } else if (options.type === 'more_replies') {
                         const msg = getMessageByFloor(options.floor);
@@ -286,7 +329,7 @@
             function startMonitor(options) {
                 stopMonitor('restart');
                 stopRequested = false;
-                console.log('[MMI] Monitor started for ' + options.type);
+                MMI_Log.log('[MMI] Monitor started for ' + options.type);
                 const startTime = Date.now();
                 const timeout = 120000;
                 activeMonitorId = setInterval(() => {
@@ -309,7 +352,7 @@
             // ========== 用户动作监听 ==========
             $(document).on('click', '.fa-paper-plane', function (e) {
                 if (!$(e.target).is(':visible')) return;
-                console.log('[MMI] Send button clicked');
+                MMI_Log.log('[MMI] Send button clicked');
                 const lastFloor = getLastAIFloor();
                 if (lastFloor === -1) return;
                 startMonitor({ type: 'new_message', floor: lastFloor });
@@ -317,7 +360,7 @@
 
             $(document).on('click', '.mes .swipe_right', function (e) {
                 if (!$(e.target).is(':visible')) return;
-                console.log('[MMI] More replies button clicked');
+                MMI_Log.log('[MMI] More replies button clicked');
                 const mesEl = $(this).closest('.mes')[0];
                 const floor = mesEl ? getFloorFromElement(mesEl) : -1;
                 if (floor === -1) return;
@@ -336,7 +379,7 @@
 
             $(document).on('click', '#option_regenerate', function (e) {
                 if (!$(e.target).is(':visible')) return;
-                console.log('[MMI] Regenerate button clicked');
+                MMI_Log.log('[MMI] Regenerate button clicked');
                 const lastFloor = getLastAIFloor();
                 if (lastFloor === -1) return;
                 const oldMsg = getMessageByFloor(lastFloor);
@@ -346,19 +389,18 @@
 
             $(document).on('click', '.fa-circle-stop', function (e) {
                 if (!$(e.target).is(':visible')) return;
-                console.log('[MMI] Stop button clicked');
+                MMI_Log.log('[MMI] Stop button clicked');
                 stopRequested = true;
             });
 
-            // ========== 编辑按钮：强制进入模型模式 ==========
+            // ========== 编辑按钮处理 ==========
             $(document).on('click', '.mes_edit, .message_edit, [title="编辑"], [title="Edit"]', function (e) {
                 const mesEl = $(this).closest('.mes')[0];
                 if (!mesEl) return;
                 const floor = getFloorFromElement(mesEl);
                 if (floor >= 0) {
-                    console.log(`[MMI] show float for #${floor} (edit mode)`);
+                    MMI_Log.log(`[MMI] show float for #${floor} (edit mode)`);
                 }
-                // 标记为编辑状态，并立即显示模型数据（无论之前展示什么）
                 mesEl.classList.add('mmi-editing');
                 ensureFloatStructure(mesEl);
                 const float = mesEl.querySelector('.model-info-float');
@@ -440,7 +482,6 @@
                 return match ? parseInt(match[0], 10) : -1;
             }
 
-            // ========== 核心刷新函数 ==========
             function refreshFloat(mesEl) {
                 const floor = getFloorFromElement(mesEl);
                 if (floor < 0 || floor >= context.chat.length) return;
@@ -454,7 +495,6 @@
                                   !!mesEl.querySelector('.edit_textarea, textarea.mes_edit_area');
 
                 if (isEditing) {
-                    // 编辑状态：严格显示模型格式
                     const fmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
                     float.textContent = parseTemplate(fmt, msg);
                     float.style.display = 'block';
@@ -476,7 +516,11 @@
                 document.querySelectorAll('.mes').forEach(mes => refreshFloat(mes));
             }
 
-            // ========== 构建浮层和编辑器 ==========
+            function renderLogPanel(panel) {
+                panel.innerHTML = mmiLogBuffer.map(line => `<div class="mmi-log-line">${escapeHTML(line)}</div>`).join('');
+                panel.scrollTop = panel.scrollHeight;
+            }
+
             function ensureFloatStructure(mesEl) {
                 if (mesEl.querySelector('.model-info-float')) return;
 
@@ -500,15 +544,19 @@
 
                 const curFmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
 
+                // 工具栏：日志 -> 辅助 -> 展示 -> 保存 -> 模板 -> 取消
                 editor.innerHTML = `
                     <input type="text" class="mmi-editor-input" value="${curFmt.replace(/"/g, '&quot;')}">
                     <div class="mmi-toolbar">
+                        <button class="mmi-btn mmi-log-btn">日志</button>
                         <button class="mmi-btn mmi-helper-btn">辅助</button>
                         <button class="mmi-btn mmi-pin-btn-display">展示</button>
                         <button class="mmi-btn mmi-save-btn">保存</button>
                         <button class="mmi-btn mmi-template-btn">模板</button>
                         <button class="mmi-btn mmi-cancel-btn">取消</button>
                     </div>
+                    <!-- 日志面板 -->
+                    <div class="mmi-log-panel"></div>
                     <div class="mmi-sub-panel mmi-helper-panel">
                         <button class="mmi-sub-btn mmi-insert-model">+模型</button>
                         <button class="mmi-sub-btn mmi-insert-preset">+预设</button>
@@ -527,16 +575,35 @@
 
                 const input = editor.querySelector('.mmi-editor-input');
 
-                // 辅助 / 展示面板切换
+                // 日志按钮事件
+                editor.querySelector('.mmi-log-btn').addEventListener('click', () => {
+                    const logPanel = editor.querySelector('.mmi-log-panel');
+                    const isVisible = logPanel.style.display === 'block';
+                    if (isVisible) {
+                        logPanel.style.display = 'none';
+                    } else {
+                        // 隐藏其他面板
+                        editor.querySelector('.mmi-helper-panel').style.display = 'none';
+                        editor.querySelector('.mmi-pin-panel').style.display = 'none';
+                        renderLogPanel(logPanel);
+                        logPanel.style.display = 'block';
+                    }
+                });
+
+                // 辅助按钮：隐藏日志和展示面板
                 editor.querySelector('.mmi-helper-btn').addEventListener('click', () => {
                     const hp = editor.querySelector('.mmi-helper-panel');
                     hp.style.display = hp.style.display === 'flex' ? 'none' : 'flex';
                     editor.querySelector('.mmi-pin-panel').style.display = 'none';
+                    editor.querySelector('.mmi-log-panel').style.display = 'none';
                 });
+
+                // 展示按钮：隐藏日志和辅助面板
                 editor.querySelector('.mmi-pin-btn-display').addEventListener('click', () => {
                     const pp = editor.querySelector('.mmi-pin-panel');
                     pp.style.display = pp.style.display === 'flex' ? 'none' : 'flex';
                     editor.querySelector('.mmi-helper-panel').style.display = 'none';
+                    editor.querySelector('.mmi-log-panel').style.display = 'none';
                 });
 
                 // 插入宏
@@ -572,7 +639,7 @@
                     refreshAllFloats();
                 });
 
-                // ========== 展示（覆盖规则） ==========
+                // 展示逻辑（保持不变）
                 const applyDisplay = (scope) => {
                     const val = input.value.trim();
                     if (!val) return;
@@ -609,39 +676,16 @@
                 editor.querySelector('.mmi-pin-user').addEventListener('click', () => applyDisplay('user'));
                 editor.querySelector('.mmi-pin-all').addEventListener('click', () => applyDisplay('all'));
 
-                // 清除展示（现在会摧毁所有浮层并重建）
                 editor.querySelector('.mmi-pin-clear').addEventListener('click', () => {
                     const scopes = getScopes();
                     scopes.ai = scopes.user = scopes.all = null;
                     context.chat.forEach(m => {
-                        if (m.extra) {
-                            delete m.extra.pinned_this;
-                            delete m.extra.display_text;
-                        }
+                        if (m.extra) { delete m.extra.pinned_this; delete m.extra.display_text; }
                     });
                     closeEditor(mesEl);
-                    // 移除全部浮层，下次鼠标/按钮操作时由 ensureFloatStructure 重建
-                    document.querySelectorAll('.model-info-float').forEach(f => f.remove());
-                    document.querySelectorAll('.mmi-editor-wrapper').forEach(e => e.remove());
-                    // 但 rebuild 需要重新绑定，所以直接挂载重建逻辑到下一个微任务
-                    // 但更简单的是：刷新页面？或调用 setupFloatSystem？这里我们只重建当前可见的
-                    // 为了安全，我们让用户刷新或调用 MMI.refreshAll()
-                    // 但我们也可以安排重建：延迟调用 refreshAllFloats 会触发重建。
-                    // 实际上 ensureFloatStructure 会在下次用户操作或 MutationObserver 触发时重建。
-                    // 我们手动触发一次全局刷新：但 refreshAllFloats 需要浮层存在。
-                    // 这里通过重新运行 setupFloatSystem 来解决：
-                    // 将 setupFloatSystem 设为可重复运行，并在此调用。
-                    // 但为了简洁，我们直接在这里调用 refreshAllFloats（它依赖于现有的浮层，但我们已经移除了，所以无效）
-                    // 更好的做法：不删除浮层，只更新内容。
-                    // 所以我们恢复为只更新内容，不删除元素。
-                    // 但为了防止浮层文本缓存问题，我们强制设置所有浮动元素的 textContent。
-                    document.querySelectorAll('.model-info-float').forEach(f => {
-                        const mesEl = f.closest('.mes');
-                        if (mesEl) refreshFloat(mesEl);
-                    });
+                    refreshAllFloats();
                 });
 
-                // 取消
                 editor.querySelector('.mmi-cancel-btn').addEventListener('click', () => closeEditor(mesEl));
 
                 refreshFloat(mesEl);
@@ -651,6 +695,7 @@
                 const floor = getFloorFromElement(mesEl);
                 if (floor < 0) return;
                 document.querySelectorAll('.mmi-editor-wrapper').forEach(w => w.style.display = 'none');
+                document.querySelectorAll('.mmi-log-panel').forEach(p => p.style.display = 'none');
                 const editor = mesEl.querySelector('.mmi-editor-wrapper');
                 const float = mesEl.querySelector('.model-info-float');
                 if (editor) {
@@ -668,11 +713,13 @@
 
             function closeEditor(mesEl) {
                 const editor = mesEl.querySelector('.mmi-editor-wrapper');
-                if (editor) editor.style.display = 'none';
+                if (editor) {
+                    editor.style.display = 'none';
+                    editor.querySelector('.mmi-log-panel').style.display = 'none';
+                }
                 refreshFloat(mesEl);
             }
 
-            // ========== 编辑状态监控 ==========
             function trackEditState(mesEl) {
                 const observer = new MutationObserver(() => {
                     const hasEditArea = mesEl.querySelector('.edit_textarea, textarea.mes_edit_area') !== null;
@@ -691,7 +738,6 @@
                 observer.observe(mesEl, { childList: true, subtree: true, attributes: false });
             }
 
-            // ========== 初始化 ==========
             function setupFloatSystem() {
                 document.querySelectorAll('.mes').forEach(mes => {
                     ensureFloatStructure(mes);
@@ -716,14 +762,14 @@
                     });
                 });
                 mesObserver.observe(chatContainer, { childList: true, subtree: true });
-                console.log('[MMI] Float system initialized.');
+                MMI_Log.log('[MMI] Float system initialized.');
             }
 
             setupFloatSystem();
-            console.log('Message Model Info: advanced editor active (v3).');
+            MMI_Log.log('Message Model Info: advanced editor active (v3).');
 
         } catch (e) {
-            console.error('Message Model Info init error:', e);
+            MMI_Log.log('Message Model Info init error:', e);
         }
     };
 
