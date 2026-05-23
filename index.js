@@ -80,7 +80,8 @@
                     }
                     .model-info-float.pinned,
                     .model-info-float.scope-visible,
-                    .model-info-float.mmi-editing {
+                    .model-info-float.mmi-editing,
+                    .model-info-float.always-visible {
                         opacity: 1;
                     }
                     .model-info-float:hover {
@@ -168,6 +169,13 @@
                     .mmi-clear-btn:hover {
                         color: rgba(255,255,255,0.9);
                     }
+                    .mmi-always-btn {
+                        color: rgba(180,180,180,0.9);
+                    }
+                    .mmi-always-btn.active {
+                        color: rgba(220,220,220,0.95);
+                        text-shadow: 0 0 4px rgba(255,255,255,0.3);
+                    }
                     /* 日志面板 */
                     .mmi-log-panel {
                         display: none;
@@ -194,6 +202,27 @@
                     }
                 `;
                 document.head.appendChild(style);
+            }
+
+            // ========== 全局常驻开关 ==========
+            let alwaysShowFloats = localStorage.getItem('mmi_alwaysShowFloats') === 'true';
+
+            function setAlwaysShowFloats(val) {
+                alwaysShowFloats = !!val;
+                localStorage.setItem('mmi_alwaysShowFloats', alwaysShowFloats);
+                updateAllAlwaysButtons();
+                refreshAllFloats();
+            }
+
+            function updateAllAlwaysButtons() {
+                document.querySelectorAll('.mmi-always-btn').forEach(btn => {
+                    btn.textContent = alwaysShowFloats ? '常驻：开' : '常驻：关';
+                    if (alwaysShowFloats) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                });
             }
 
             MMI_Log.log('Message Model Info: extension loaded (advanced editor).');
@@ -501,13 +530,15 @@
                     float.classList.add('force-visible');
                 } else {
                     float.textContent = getDisplayTextForMsg(msg);
-                    const shouldShow = isFloatPinnedOrScoped(msg);
+                    const shouldShow = isFloatPinnedOrScoped(msg) || alwaysShowFloats;
                     if (shouldShow) {
                         float.style.display = 'block';
-                        float.classList.add('force-visible', 'scope-visible');
+                        float.classList.add('force-visible');
+                        if (alwaysShowFloats) float.classList.add('always-visible');
+                        if (isFloatPinnedOrScoped(msg)) float.classList.add('scope-visible');
                     } else {
                         float.style.display = 'none';
-                        float.classList.remove('force-visible', 'scope-visible');
+                        float.classList.remove('force-visible', 'scope-visible', 'always-visible');
                     }
                 }
             }
@@ -544,7 +575,7 @@
 
                 const curFmt = (msg.extra && msg.extra.custom_format) ? msg.extra.custom_format : globalTemplate;
 
-                // 工具栏：日志 -> 辅助 -> 展示 -> 保存 -> 模板 -> 取消
+                // 工具栏：日志 辅助 展示 保存 模板 常驻 取消
                 editor.innerHTML = `
                     <input type="text" class="mmi-editor-input" value="${curFmt.replace(/"/g, '&quot;')}">
                     <div class="mmi-toolbar">
@@ -553,6 +584,7 @@
                         <button class="mmi-btn mmi-pin-btn-display">展示</button>
                         <button class="mmi-btn mmi-save-btn">保存</button>
                         <button class="mmi-btn mmi-template-btn">模板</button>
+                        <button class="mmi-btn mmi-always-btn">${alwaysShowFloats ? '常驻：开' : '常驻：关'}</button>
                         <button class="mmi-btn mmi-cancel-btn">取消</button>
                     </div>
                     <!-- 日志面板 -->
@@ -582,7 +614,6 @@
                     if (isVisible) {
                         logPanel.style.display = 'none';
                     } else {
-                        // 隐藏其他面板
                         editor.querySelector('.mmi-helper-panel').style.display = 'none';
                         editor.querySelector('.mmi-pin-panel').style.display = 'none';
                         renderLogPanel(logPanel);
@@ -604,6 +635,14 @@
                     pp.style.display = pp.style.display === 'flex' ? 'none' : 'flex';
                     editor.querySelector('.mmi-helper-panel').style.display = 'none';
                     editor.querySelector('.mmi-log-panel').style.display = 'none';
+                });
+
+                // 常驻按钮事件
+                const alwaysBtn = editor.querySelector('.mmi-always-btn');
+                alwaysBtn.addEventListener('click', () => {
+                    const newState = !alwaysShowFloats;
+                    setAlwaysShowFloats(newState);
+                    closeEditor(mesEl);  // 自动关闭编辑器，切换后就可看到效果
                 });
 
                 // 插入宏
@@ -639,7 +678,7 @@
                     refreshAllFloats();
                 });
 
-                // 展示逻辑（保持不变）
+                // 展示逻辑
                 const applyDisplay = (scope) => {
                     const val = input.value.trim();
                     if (!val) return;
@@ -688,6 +727,11 @@
 
                 editor.querySelector('.mmi-cancel-btn').addEventListener('click', () => closeEditor(mesEl));
 
+                // 初始化常驻按钮样式（已在HTML中设置文本，但需补充active类）
+                if (alwaysShowFloats) {
+                    alwaysBtn.classList.add('active');
+                }
+
                 refreshFloat(mesEl);
             }
 
@@ -707,6 +751,13 @@
                     }
                     editor.querySelector('.mmi-helper-panel').style.display = 'none';
                     editor.querySelector('.mmi-pin-panel').style.display = 'none';
+                    // 常驻按钮文字更新（以防万一）
+                    const alwaysBtn = editor.querySelector('.mmi-always-btn');
+                    if (alwaysBtn) {
+                        alwaysBtn.textContent = alwaysShowFloats ? '常驻：开' : '常驻：关';
+                        if (alwaysShowFloats) alwaysBtn.classList.add('active');
+                        else alwaysBtn.classList.remove('active');
+                    }
                 }
                 if (float) float.style.display = 'none';
             }
@@ -763,6 +814,9 @@
                 });
                 mesObserver.observe(chatContainer, { childList: true, subtree: true });
                 MMI_Log.log('[MMI] Float system initialized.');
+
+                // 初始应用常驻状态
+                if (alwaysShowFloats) refreshAllFloats();
             }
 
             setupFloatSystem();
